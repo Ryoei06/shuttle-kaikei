@@ -346,8 +346,14 @@ const fmtDateFull=s=>{if(!s)return"";const[y,m,d]=s.split("-");return `${y}年${
 const EXP_CATS=["コート代","シャトル代","備品","飲食","交通費","その他"];
 const INC_CATS=["イベント収入","寄付","助成金","物品販売","その他"];
 const isIncome=e=>e.kind==="in";          // 支出タブ内の「収入」項目
+const isPendingPay=e=>!isIncome(e)&&!!e.date&&e.date>todayStr();  // 支払予定日が未来＝まだ引き落とされていない
 const outEntries=()=>state.expenses.filter(e=>!isIncome(e));
 const inEntries=()=>state.expenses.filter(e=>isIncome(e));
+const debitedOut=()=>state.expenses.filter(e=>!isIncome(e)&&!isPendingPay(e));   // 引き落とし済み（残高に反映）
+function pendingPayList(){ // 引き落とし前の支払予定、予定日の早い順
+  return state.expenses.filter(e=>isPendingPay(e)).sort((a,b)=>a.date<b.date?-1:1);
+}
+const pendingPayTotal=()=>state.expenses.filter(e=>isPendingPay(e)).reduce((a,e)=>a+e.amount,0);
 const VENUES=["池田総合スポーツセンター","豊島体育館","柴原体育館","庄内体育館"];
 const COLLECTORS=["こうき","こうせい","はるか","りょうえい","かずや","ゆうと","そらと","なおひろ","みづき","ゆみか","なつき","あづ"];
 const SLOTS=["13:00~17:00","16:30~18:30","18:00~21:00"];
@@ -369,6 +375,7 @@ function seed(){
     {id:"e4",date:ymd(6),category:"シャトル代",amount:3200,note:"1ダース",advancedBy:"",reimbursed:false,venue:"",slot:""},
     {id:"e5",date:ymd(28),category:"イベント収入",amount:12000,note:"夏祭り 出店売上",kind:"in"},
     {id:"e6",date:ymd(40),category:"寄付",amount:5000,note:"OBより",kind:"in"},
+    {id:"e7",date:ymd(-18),category:"コート代",amount:2800,note:"後日引き落とし",venue:"池田総合スポーツセンター",slot:"18:00~21:00"},
   ];
   return {settings:{clubName:"バドミントンサークル",carryover:5000,entryFee:1500,sessionFee:500},
     sessions:s,expenses:e,_sample:true};
@@ -404,7 +411,7 @@ const entryIncomeTotal=()=>state.sessions.reduce((a,s)=>a+sessionEntry(s),0);
 const newMemberTotal=()=>state.sessions.reduce((a,s)=>a+sessionNew(s),0);
 const feeIncomeTotal=()=>state.sessions.reduce((a,s)=>a+sessionIncome(s),0);
 const extraIncomeTotal=()=>state.sessions.reduce((a,s)=>a+sessionExtra(s),0);
-const expenseTotal=()=>outEntries().reduce((a,e)=>a+e.amount,0);
+const expenseTotal=()=>debitedOut().reduce((a,e)=>a+e.amount,0);
 const otherIncomeTotal=()=>inEntries().reduce((a,e)=>a+e.amount,0);
 const balance=()=>state.settings.carryover+entryIncomeTotal()+feeIncomeTotal()+extraIncomeTotal()+otherIncomeTotal()-expenseTotal();
 function advanceList(){
@@ -432,7 +439,7 @@ function transactions(){
   state.sessions.forEach(s=>{const x=sessionExtra(s);if(x)t.push({date:s.date,kind:"特別収入",label:(s.extraLabel?s.extraLabel:(s.venue||"活動")+" 特別収入"),amount:x});});
   state.expenses.forEach(e=>{
     if(isIncome(e))t.push({date:e.date,kind:"その他収入",label:e.category+(e.note?" / "+e.note:""),amount:e.amount});
-    else t.push({date:e.date,kind:"支出",label:e.category+(e.note?" / "+e.note:""),amount:-e.amount});
+    else if(!isPendingPay(e))t.push({date:e.date,kind:"支出",label:e.category+(e.note?" / "+e.note:""),amount:-e.amount});
   });
   return t.sort((a,b)=>a.date<b.date?1:a.date>b.date?-1:0);
 }
@@ -497,6 +504,7 @@ function viewDash(v){
   const monthOut=tx.filter(t=>t.amount<0&&t.date.slice(0,7)===ym).reduce((a,t)=>a-t.amount,0);
   const adv=advanceList();
   const rem=remitList();
+  const pend=pendingPayList();
   const recent=tx.slice(0,6);
   v.innerHTML=`
   <div class="section-head">
@@ -521,6 +529,17 @@ function viewDash(v){
       <div class="foot">${now.getMonth()+1}月</div>
     </div>
   </div>
+  ${pend.length?`<div class="card">
+    <div class="pad" style="padding-bottom:6px"><h3 style="font-size:1rem">支払予定（引き落とし前）</h3></div>
+    <div class="rows">${pend.map(e=>`
+      <div class="row">
+        <div class="mark join">⏳</div>
+        <div class="main"><div class="t">${esc(e.category)}${e.venue?` <span class="s">/ ${esc(e.venue)}</span>`:e.note?` <span class="s">/ ${esc(e.note)}</span>`:""}</div>
+          <div class="s">${fmtDateFull(e.date)} 引き落とし予定</div></div>
+        <span class="pill due tnum">${yen(e.amount)}</span>
+      </div>`).join("")}</div>
+    <div class="pad" style="padding-top:12px;color:var(--muted);font-size:.8rem">合計 <b class="tnum">${yen(pendingPayTotal())}</b> が引き落とし待ちです。各予定日を過ぎると自動で残高から引かれます。</div>
+  </div>`:""}
   <div class="two">
     <div class="card">
       <div class="pad" style="padding-bottom:6px"><h3 style="font-size:1rem">口座への送金待ち</h3></div>
@@ -664,20 +683,21 @@ function viewExpenses(v){
   v.innerHTML=`
   <div class="section-head">
     <h2>収入・支出</h2>
-    <span class="sub">活動以外 ・ 収入 ${yen(otherIncomeTotal())}／支出 ${yen(expenseTotal())}</span>
+    <span class="sub">活動以外 ・ 収入 ${yen(otherIncomeTotal())}／支出 ${yen(expenseTotal())}${pendingPayTotal()?` ・ 支払予定 ${yen(pendingPayTotal())}`:""}</span>
     <div class="spacer"></div>
     <button class="btn" id="add">＋ 記録する</button>
   </div>
   ${list.length?`<div class="card"><div class="rows">${list.map(e=>{
-    const inc=isIncome(e),adv=(!inc&&e.advancedBy)?e.advancedBy:"";
+    const inc=isIncome(e),adv=(!inc&&e.advancedBy)?e.advancedBy:"",pend=isPendingPay(e);
     return `<div class="row">
-      <div class="mark ${inc?"in":"out"}">${inc?"¥":"🧾"}</div>
+      <div class="mark ${inc?"in":pend?"join":"out"}">${inc?"¥":pend?"⏳":"🧾"}</div>
       <div class="main"><div class="t">${esc(e.category)}${e.note?` <span class="s">/ ${esc(e.note)}</span>`:""}</div>
-        <div class="s">${fmtDateFull(e.date)}${(!inc&&e.venue)?` ・ ${esc(e.venue)}`:""}${(!inc&&e.slot)?` ・ ${esc(e.slot)}`:""}${adv?` ・ 立替：${esc(adv)}`:""}</div></div>
-      ${adv?(e.reimbursed?`<button class="pill ok no-print" data-toggle="${e.id}" title="クリックで精算待ちに戻す">✓ 精算済</button>`:`<button class="pill due no-print" data-toggle="${e.id}" title="クリックで精算済にする">精算待ち</button>`):""}
-      <div class="amt ${inc?"pos":"neg"} tnum">${inc?"＋":"−"}${yen(e.amount)}</div>
+        <div class="s">${fmtDateFull(e.date)}${pend?"引き落とし予定":""}${(!inc&&e.venue)?` ・ ${esc(e.venue)}`:""}${(!inc&&e.slot)?` ・ ${esc(e.slot)}`:""}${adv?` ・ 立替：${esc(adv)}`:""}</div></div>
+      ${pend?`<span class="pill due">支払予定</span>`:adv?(e.reimbursed?`<button class="pill ok no-print" data-toggle="${e.id}" title="クリックで精算待ちに戻す">✓ 精算済</button>`:`<button class="pill due no-print" data-toggle="${e.id}" title="クリックで精算済にする">精算待ち</button>`):""}
+      <div class="amt ${inc?"pos":pend?"":"neg"} tnum" ${pend?'style="color:var(--muted)"':""}>${inc?"＋":"−"}${yen(e.amount)}</div>
       <button class="btn sm ghost no-print" data-edit="${e.id}">編集</button>
-    </div>`;}).join("")}</div></div>`
+    </div>`;}).join("")}</div></div>
+  ${pendingPayTotal()?`<p style="color:var(--faint);font-size:.76rem;margin:4px 2px 0">⏳「支払予定」は引き落とし日（設定した日付）を過ぎると自動で残高に反映されます。それまでは残高・支出合計に含まれません。</p>`:""}`
   :`<div class="card"><div class="empty"><span class="em">🧾</span>記録がありません。<br>コート代などの支出や、イベント収入・寄付などの収入を「＋ 記録する」から登録できます。</div></div>`}`;
   $("#add").onclick=()=>openExpense();
   $$("[data-edit]",v).forEach(b=>b.onclick=()=>openExpense(b.dataset.edit));
@@ -698,9 +718,10 @@ function openExpense(id){
           <button type="button" data-k="in" ${kind==="in"?'aria-pressed="true"':'aria-pressed="false"'}>収入</button>
         </div></div>
       <div class="field row2">
-        <div><label for="e-date">日付</label><input type="date" id="e-date" value="${ed?ed.date:todayStr()}"></div>
+        <div><label for="e-date">日付／引き落とし予定日</label><input type="date" id="e-date" value="${ed?ed.date:todayStr()}"></div>
         <div><label for="e-amt">金額</label><input type="number" id="e-amt" min="0" step="100" value="${ed?ed.amount:""}" placeholder="0"></div>
       </div>
+      <div class="field" id="e-duewrap" style="display:none"><div class="calc-note" id="e-due" style="background:var(--warn-soft)"></div></div>
       <div class="field"><label for="e-cat">項目</label><select id="e-cat">${catOpts(kind,ed?ed.category:"")}</select></div>
       <div id="e-court" class="field" style="gap:14px;${courtShow?"":"display:none"}">
         <div class="field"><label for="e-venue">体育館</label>
@@ -731,12 +752,17 @@ function openExpense(id){
   advEl.oninput=updAdv;
   const updCourt=()=>{court.style.display=(kind==="out"&&catSel.value==="コート代")?"":"none";};
   catSel.onchange=updCourt;
+  const dateEl=$("#e-date",dlg),dueWrap=$("#e-duewrap",dlg),dueEl=$("#e-due",dlg);
+  const updDue=()=>{const future=kind==="out"&&dateEl.value&&dateEl.value>todayStr();
+    dueWrap.style.display=future?"":"none";
+    if(future)dueEl.innerHTML=`⏳ <b>支払予定</b>：${fmtDateFull(dateEl.value)} に自動で引き落とされます。それまで残高・支出には含まれません（後日引き落としの体育館代などに）。`;};
+  dateEl.oninput=updDue;updDue();
   $$("#e-kind button",dlg).forEach(btn=>btn.onclick=()=>{
     kind=btn.dataset.k;
     $$("#e-kind button",dlg).forEach(b=>b.setAttribute("aria-pressed",b.dataset.k===kind?"true":"false"));
     catSel.innerHTML=(kind==="in"?INC_CATS:EXP_CATS).map(c=>`<option>${c}</option>`).join("");
     advwrap.style.display=kind==="in"?"none":"flex";
-    updCourt();
+    updCourt();updDue();
   });
   const evSel=$("#e-venue",dlg),evOther=$("#e-venue-other",dlg);
   evSel.onchange=()=>{const o=evSel.value==="__other";evOther.style.display=o?"":"none";if(o)evOther.focus();};
@@ -769,7 +795,7 @@ function viewReport(v){
   const feeSum=inR.reduce((a,s)=>a+sessionIncome(s),0);
   const extraSum=inR.reduce((a,s)=>a+sessionExtra(s),0);
   const otherIncSum=state.expenses.filter(e=>isIncome(e)&&inRange(e.date,r)).reduce((a,e)=>a+e.amount,0);
-  const expByCat={};state.expenses.filter(e=>!isIncome(e)&&inRange(e.date,r)).forEach(e=>expByCat[e.category]=(expByCat[e.category]||0)+e.amount);
+  const expByCat={};state.expenses.filter(e=>!isIncome(e)&&!isPendingPay(e)&&inRange(e.date,r)).forEach(e=>expByCat[e.category]=(expByCat[e.category]||0)+e.amount);
   const expSum=Object.values(expByCat).reduce((a,b)=>a+b,0);
   const incSum=entrySum+feeSum+extraSum+otherIncSum;
   const net=incSum-expSum;
@@ -844,7 +870,7 @@ function monthlyChart(r){
   for(let i=5;i>=0;i--){const d=new Date(now.getFullYear(),now.getMonth()-i,1);months.push(d.toISOString().slice(0,7));}
   const inc={},exp={};months.forEach(m=>{inc[m]=0;exp[m]=0;});
   state.sessions.forEach(s=>{const k=s.date.slice(0,7);if(k in inc)inc[k]+=sessionTotal(s);});
-  state.expenses.forEach(e=>{const k=e.date.slice(0,7);if(k in exp){if(isIncome(e))inc[k]+=e.amount;else exp[k]+=e.amount;}});
+  state.expenses.forEach(e=>{const k=e.date.slice(0,7);if(k in exp){if(isIncome(e))inc[k]+=e.amount;else if(!isPendingPay(e))exp[k]+=e.amount;}});
   const max=Math.max(1,...months.map(m=>Math.max(inc[m],exp[m])));
   const W=Math.max(340,months.length*92),H=180,padB=34,padT=10,padL=44,plot=H-padB-padT,gw=(W-padL-10)/months.length;
   const y=val=>padT+plot-(val/max)*plot;
@@ -919,7 +945,7 @@ function viewAnalysis(v){
   // venue aggregation
   const vm={};const vRow=name=>vm[name]=vm[name]||{venue:name,n:0,part:0,rev:0,exp:0};
   ss.forEach(s=>{const r=vRow(s.venue||"（未設定）");r.n++;r.part+=sessionCount(s);r.rev+=sessionIncome(s);});
-  state.expenses.forEach(e=>{if(isIncome(e))return;let name;if(e.venue)name=e.venue;else{const day=sessByDate[e.date];name=(day&&day.length)?(day[0].venue||"（未設定）"):"その他（活動日以外）";}vRow(name).exp+=e.amount;});
+  state.expenses.forEach(e=>{if(isIncome(e)||isPendingPay(e))return;let name;if(e.venue)name=e.venue;else{const day=sessByDate[e.date];name=(day&&day.length)?(day[0].venue||"（未設定）"):"その他（活動日以外）";}vRow(name).exp+=e.amount;});
   const venues=Object.values(vm).map(r=>({...r,profit:r.rev-r.exp,avg:r.n?r.part/r.n:0})).sort((a,b)=>b.rev-a.rev);
   // totals
   const nS=ss.length;
@@ -946,7 +972,7 @@ function viewAnalysis(v){
   // monthly profit
   const mon={};
   ss.forEach(s=>{const k=s.date.slice(0,7);(mon[k]=mon[k]||{inc:0,exp:0}).inc+=sessionTotal(s);});
-  state.expenses.forEach(e=>{const k=e.date.slice(0,7);const m=(mon[k]=mon[k]||{inc:0,exp:0});if(isIncome(e))m.inc+=e.amount;else m.exp+=e.amount;});
+  state.expenses.forEach(e=>{const k=e.date.slice(0,7);const m=(mon[k]=mon[k]||{inc:0,exp:0});if(isIncome(e))m.inc+=e.amount;else if(!isPendingPay(e))m.exp+=e.amount;});
   const monData=Object.keys(mon).sort().map(k=>({x:(+k.slice(5))+"月",y:mon[k].inc-mon[k].exp}));
 
   v.innerHTML=`
